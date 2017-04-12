@@ -7,6 +7,8 @@ module.exports = createPouchMiddleware;
 
 function createPouchMiddleware(_paths) {
   var paths = _paths || [];
+  var allChanges = {};
+
   if (!Array.isArray(paths)) {
     paths = [paths];
   }
@@ -37,13 +39,13 @@ function createPouchMiddleware(_paths) {
     spec.actions = extend({}, defaultSpec.actions, spec.actions);
     spec.docs = {};
 
-    if (! spec.db) {
+    if (!spec.db) {
       throw new Error('path ' + path.path + ' needs a db');
     }
     return spec;
   });
 
-  function listen(path, dispatch, initialBatchDispatched) {
+  function listen(index, path, dispatch, initialBatchDispatched) {
     path.db.info().then((info) => {
       if (info.update_seq === 0) {
         initialBatchDispatched();
@@ -53,6 +55,9 @@ function createPouchMiddleware(_paths) {
         live: true,
         include_docs: true
       });
+
+      allChanges[index] = changes;
+
       changes.on('change', change => {
         onDbChange(path, change, dispatch);
         if (change.seq === info.update_seq) {
@@ -129,9 +134,23 @@ function createPouchMiddleware(_paths) {
     dispatch(this.actions.update(doc));
   }
 
+  function switchDataBase(db, options) {
+    allChanges.forEach(function(change) {
+       change.cancel();
+    });
+
+    paths.forEach((path, index) => {
+      listen(index, path, options.dispatch, (err) => {
+        if (path.initialBatchDispatched) {
+          path.initialBatchDispatched(err);
+        }
+      });
+    });
+  }
+
   return function(options) {
-    paths.forEach((path) => {
-      listen(path, options.dispatch, (err) => {
+    paths.forEach((path, index) => {
+      listen(index, path, options.dispatch, (err) => {
         if (path.initialBatchDispatched) {
           path.initialBatchDispatched(err);
         }
@@ -141,6 +160,11 @@ function createPouchMiddleware(_paths) {
     return function(next) {
       return function(action) {
         var returnValue = next(action);
+
+        if (action.type === 'POUCH_REDUX__CHANGE_DB') {
+          switchDataBase(action.db, options);
+        }
+
         var newState = options.getState();
 
         paths.forEach(path => processNewStateForPath(path, newState));
